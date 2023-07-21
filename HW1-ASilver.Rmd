@@ -1,0 +1,583 @@
+---
+title: "R Notebook - HW 1"
+output: html_notebook
+---
+# set seed to 2021
+```{r, set.seed(222)}
+knitr::opts_chunk$set(cache.extra = knitr::rand_seed)
+```
+
+#load libraries
+```{r}
+tryCatch(require(pacman),finally=utils:::install.packages(pkgs='pacman',repos='http://cran.r-project.org'));
+require(pacman)
+
+pacman::p_load(Hmisc,
+               checkmate,
+               corrr,
+               conflicted,
+               readxl,
+               dplyr,
+               tidyr,
+               ggplot2,
+               knitr,
+               evaluate,
+               iopsych,
+               psych,
+               quantreg,
+               lavaan,
+               xtable,
+               reshape2,
+               GPArotation,
+               Amelia,
+               esquisse,
+               expss,
+               multilevel,
+               janitor,
+               mice,
+               tidylog
+)
+```
+```{r}
+suppressPackageStartupMessages({
+library(Hmisc) # Contains many functions useful for data analysis
+library(checkmate) # Fast and Versatile Argument Checks
+library(corrr) # Correlations in R
+library(conflicted) # Makes it easier to handle same named functions that are in different packages
+library(readxl) # reading in Excel files
+library(dplyr) # data manipulation
+library(tidyr) # Tidy Messy Data
+library(ggplot2) # data visualization
+library(knitr) # knitting data into HTML, Word, or PDF
+library(evaluate) # Parsing and Evaluation Tools that Provide More Details than the Default
+library(iopsych) # Methods for Industrial/Organizational Psychology
+library(psych) # Procedures for Psychological, Psychometric, and Personality Research
+library(quantreg) # Quantile Regression
+library(lavaan) # confirmatory factor analysis (CFA) and structural equation modeling (SEM)
+library(xtable) # Export Tables to LaTeX or HTML
+library(reshape2) # transforming data between wide and long (tall)
+library(GPArotation) # GPA Factor Rotation
+library(Amelia) # A Program for Missing Data
+library(esquisse) # Explore and Visualize Your Data Interactively
+library(expss) # Tables, Labels and Some Useful Functions from Spreadsheets and 'SPSS' Statistics
+library(multilevel) # Multilevel Functions
+library(janitor) # 	Simple Tools for Examining and Cleaning Dirty Data
+library(mice) # Multivariate Imputation by Chained Equations
+library(skimr) # Exploratory Data Analysis
+library(tidylog) # Creates a log to tell you what your tidyverse commands are doing to the data. NOTE: MAKE SURE TO ALWAYS LOAD LAST!!!
+})
+
+for (f in getNamespaceExports("tidylog")) {
+        conflicted::conflict_prefer(f, "tidylog", quiet = TRUE)
+}
+
+```
+
+# Look at Data
+```{r}
+str(SAQ)
+```
+```{r}
+glimpse(SAQ)
+```
+# Get Column Names
+```{r}
+colnames(SAQ)
+```
+```{r}
+dput(colnames(SAQ))
+```
+```{r}
+
+#Export to Excel
+openxlsx::write.xlsx(SAQ, "C:/Users/allie/Documents/IOMP/R/AA.xlsx")
+
+```
+```{r}
+Data <- select(SAQ, -c(24,25,26,27,28,29,30,31))
+```
+Dropped columns that were not responses to questions.
+
+# Exploratory Data Analysis
+## Missing Data
+```{r}
+library(Amelia)
+
+missmap(Data)
+```
+No Missing Data! 
+```{r}
+percentmissing = function (x){ sum(is.na(x))/length(x) * 100}
+
+missing <- apply(Data, 1, percentmissing) # we will use an apply function to loop it. 1 indicates rows and 2 indicates columns
+
+table(missing)
+```
+Still no missing data! 
+```{r}
+summary(Data)
+```
+No questions have wonky min, max, median, or means.
+## Outlier Detection
+```{r}
+cutoff = qchisq(1-.001, ncol(Data))
+mahal = mahalanobis(Data,
+                    colMeans(Data),
+                    cov(Data))
+                    # tol=3.62123e-20) needed this when received an error about subscript out of bounds
+cutoff ##cutoff score
+ncol(Data) ##df
+summary(mahal < cutoff)
+```
+We have 97 potential outliers and our cutoff score is 49.728.
+
+```{r}
+Data_mahal <- Data %>%
+    bind_cols(mahal) %>%
+    rename(mahal = `...24`) # renaming the new column "mahal"
+```
+
+```{r}
+hist(Data_mahal$mahal)
+```
+```{r}
+boxplot(Data_mahal$mahal)
+```
+```{r}
+noout <- Data_mahal %>%
+    filter(mahal < cutoff)
+```
+Boxplot and histogram both show outliers in upper portion of data set, so we remove all 97 of them. 
+## Additivity
+```{r}
+correl = cor(noout, use = "pairwise.complete.obs")
+
+symnum(correl)
+
+correl
+```
+1's are all in a diagonal line and there are not correlations above 0.6.
+# Other Assumptions
+Create "fake" regression for assumptions. 
+```{r}
+random = rchisq(nrow(noout), 7)
+fake = lm(random~., data = noout)
+standardized = rstudent(fake)
+fitted = scale(fake$fitted.values)
+```
+## Residuals and Linearity
+```{r}
+hist(standardized)
+```
+Distribution of residuals is somewhat normal but skews right.
+```{r}
+qqnorm(standardized)
+abline(0,1)
+```
+Data points are mostly in normal shape with some straying only at the tail ends - acceptable.
+## Homogeneity
+```{r}
+plot(fitted,standardized)
+abline(0,0)
+abline(v = 0)
+```
+No shape apparent.
+## Bartlet's Test - Correlation Adequacy
+```{r}
+cortest.bartlett(correl, n = nrow(noout))
+```
+Significant p value is good. 
+## Kaiser, Meyer, Olkin Measure of Sampling Adequacy (KMO) Test
+```{r}
+KMO(correl[,1:23])
+```
+Great KMO.
+<!-- # Changing data set back to Data name -->
+```{r}
+Data <- noout
+```
+```{r}
+colnames(Data)
+```
+## Histograms of each item
+```{r}
+library(Hmisc)
+hist.data.frame(Data)
+```
+
+# Splitting Data
+
+```{r}
+#set seed
+set.seed(2021)
+```
+
+```{r}
+#Create ID Row
+Data <- Data %>% 
+    mutate(ID = row_number())
+```
+```{r}
+colnames(Data)
+```
+```{r}
+#move IDv variable to the front
+Data <- Data %>%
+    dplyr::select(ID, everything())
+```
+
+```{r}
+#check to make sure it moved
+colnames(Data)
+```
+## Training and Test Data
+```{r}
+training <- sample(Data$ID, length(Data$ID)*0.5)
+
+Data_training <- subset(Data, ID %in% training)
+Data_test <- subset(Data, !(ID %in% training))
+```
+```{r}
+hist(Data_training$Question_01, breaks = 6)
+hist(Data_training$Question_02, breaks = 6)
+hist(Data_training$Question_03, breaks = 6)
+hist(Data_training$Question_04, breaks = 6)
+hist(Data_training$Question_05, breaks = 6)
+hist(Data_training$Question_06, breaks = 6)
+hist(Data_training$Question_07, breaks = 6)
+hist(Data_training$Question_08, breaks = 6)
+hist(Data_training$Question_09, breaks = 6)
+hist(Data_training$Question_10, breaks = 6)
+hist(Data_training$Question_11, breaks = 6)
+hist(Data_training$Question_12, breaks = 6)
+hist(Data_training$Question_13, breaks = 6)
+hist(Data_training$Question_14, breaks = 6)
+hist(Data_training$Question_15, breaks = 6)
+hist(Data_training$Question_16, breaks = 6)
+hist(Data_training$Question_17, breaks = 6)
+hist(Data_training$Question_18, breaks = 6)
+hist(Data_training$Question_19, breaks = 6)
+hist(Data_training$Question_20, breaks = 6)
+hist(Data_training$Question_21, breaks = 6)
+hist(Data_training$Question_22, breaks = 6)
+hist(Data_training$Question_23, breaks = 6)
+
+```
+```{r}
+par(mfrow =c(5,5))
+```
+
+## Correlation Matrix
+```{r}
+flattenCorrMatrix <- function(cormat, pmat, nmat) {
+    ut <- upper.tri(cormat)
+    data.frame(
+        row = rownames(cormat)[row(cormat)[ut]],
+        column = rownames(cormat)[col(cormat)[ut]],
+        cor  =(cormat)[ut],
+        p = pmat[ut],
+        n = nmat[ut]
+    )
+}
+```
+
+```{r}
+#Change data into matrix
+Data_training_MAT <- as.matrix(Data_training)
+```
+
+```{r}
+library(checkmate)
+res <- rcorr(Data_training_MAT)
+print(res)
+
+```
+```{r}
+library(dplyr)
+Data_Flat_Cor_Mat <- flattenCorrMatrix(res$r, res$P, res$n) 
+
+Data_Flat_Cor_Mat[,3:5] <- round(Data_Flat_Cor_Mat[,3:5], 3)
+
+#Adding * to any correlation with p<0.05
+Data_Flat_Cor_Mat <- Data_Flat_Cor_Mat %>%
+    mutate(Sig = ifelse(p < 0.05, paste0(p, "*"),
+           p))
+
+Data_Flat_Cor_Mat
+
+```
+# EFA
+## Parallel Analysis
+```{r}
+library(psych)
+fa.parallel(Data_training[c(2:24)])
+```
+The Parallel Analysis tells us there are 5 factors, which is likely too high. Looking at the scree plot and based on best practices, we are going to start our analysis with 4 factors. 
+
+```{r}
+fa_ml_4_trn <- fa(Data_training[c(2:24)], nfactors = 4, fm="ml")
+
+print(fa_ml_4_trn)
+```
+```{r}
+print(fa_ml_4_trn$loadings, cutoff = .3)
+```
+We see some cross loading and some questions not loading at all. So we try with lower cutoff. 
+```{r}
+print(fa_ml_4_trn$loadings, cutoff = 0.25)
+```
+Lower cutoff did not help. Same frequency of cross loadings. 
+Now we try 5 factors. 
+```{r}
+fa_ml_5_trn <- fa(Data_training[c(2:24)], nfactors = 5, fm="ml")
+
+print(fa_ml_5_trn)
+```
+```{r}
+print(fa_ml_5_trn$loadings, cutoff = .3)
+```
+When we increase to 5 factors, we see less cross loading but still have questions 10,15, and 23 with no loading at all. Additionally, 5th factor only has two items, which is inadequate. 
+
+## Rotation
+```{r}
+library(psych)
+```
+
+```{r}
+fa_ml_4_trn <- fa(Data_training[c(2:24)], nfactors = 4, fm="ml", rotate="oblimin")
+
+print(fa_ml_4_trn)
+
+print(fa_ml_4_trn$loadings, cutoff = .3)
+```
+Still crossloading and 10,15,23 not loading at all. Now, drop items that have crossloading. 
+```{r}
+Data_training_MOD <- Data_training %>%
+    dplyr::select(-c(Question_03, Question_07, Question_14, Question_18))
+```
+```{r}
+colnames(Data_training_MOD)
+```
+```{r}
+fa_ml_4_trn_MOD <- fa(Data_training_MOD[c(2:21)], nfactors = 4, fm="ml", rotate="oblimin") 
+
+print(fa_ml_4_trn_MOD)
+
+print(fa_ml_4_trn_MOD$loadings, cutoff = .3)
+```
+TLI: 0.917 (good). RMSEA of 0.049 
+
+Try rotating and then dropping cross-loading items from the 5 factor. 
+```{r}
+fa_ml_5_trn <- fa(Data_training[c(2:24)], nfactors = 5, fm="ml", rotate="oblimin")
+
+print(fa_ml_5_trn)
+
+print(fa_ml_5_trn$loadings, cutoff = .3)
+```
+Drop cross loading question from rotated 5 factor model. 
+```{r}
+Data_training_MOD5 <- Data_training %>%
+    dplyr::select(-c(Question_14))
+```
+```{r}
+colnames(Data_training_MOD5)
+```
+```{r}
+fa_ml_5_trn <- fa(Data_training_MOD5[c(2:23)], nfactors = 5, fm="ml", rotate="oblimin")
+
+print(fa_ml_5_trn)
+
+print(fa_ml_5_trn$loadings, cutoff = .3)
+```
+# Scale Building
+# Data Cleanup
+Remove data points that are not part of scales.
+```{r}
+library(dplyr)
+Items <- Data_training_MOD5 %>%
+    dplyr::select(-c(mahal, ID))
+```
+```{r}
+library(skimr)
+
+skim(Items)
+```
+```{r}
+hist(Items$Question_01, breaks = 6)
+hist(Items$Question_02, breaks = 6)
+hist(Items$Question_03, breaks = 6)
+hist(Items$Question_04, breaks = 6)
+hist(Items$Question_05, breaks = 6)
+hist(Items$Question_06, breaks = 6)
+hist(Items$Question_07, breaks = 6)
+hist(Items$Question_08, breaks = 6)
+hist(Items$Question_09, breaks = 6)
+hist(Items$Question_10, breaks = 6)
+hist(Items$Question_11, breaks = 6)
+hist(Items$Question_12, breaks = 6)
+hist(Items$Question_13, breaks = 6)
+hist(Items$Question_15, breaks = 6)
+hist(Items$Question_16, breaks = 6)
+hist(Items$Question_17, breaks = 6)
+hist(Items$Question_18, breaks = 6)
+hist(Items$Question_19, breaks = 6)
+hist(Items$Question_20, breaks = 6)
+hist(Items$Question_21, breaks = 6)
+hist(Items$Question_22, breaks = 6)
+hist(Items$Question_23, breaks = 6)
+```
+Try scale building with 4 factors.
+
+```{r}
+library(dplyr)
+Items4 <- Data_training_MOD %>%
+    dplyr::select(-c(mahal, ID))
+```
+```{r}
+library(skimr)
+
+skim(Items4)
+```
+```{r}
+hist(Items4$Question_01, breaks = 6)
+hist(Items4$Question_02, breaks = 6)
+hist(Items4$Question_04, breaks = 6)
+hist(Items4$Question_05, breaks = 6)
+hist(Items4$Question_06, breaks = 6)
+hist(Items4$Question_08, breaks = 6)
+hist(Items4$Question_09, breaks = 6)
+hist(Items4$Question_10, breaks = 6)
+hist(Items4$Question_11, breaks = 6)
+hist(Items4$Question_12, breaks = 6)
+hist(Items4$Question_13, breaks = 6)
+hist(Items4$Question_15, breaks = 6)
+hist(Items4$Question_16, breaks = 6)
+hist(Items4$Question_17, breaks = 6)
+hist(Items4$Question_19, breaks = 6)
+hist(Items4$Question_20, breaks = 6)
+hist(Items4$Question_21, breaks = 6)
+hist(Items4$Question_22, breaks = 6)
+hist(Items4$Question_23, breaks = 6)
+```
+Do not reverse score anything because the only question that would warrant reverse scoring is Question 3 (based on its wording and earlier negative loading) and we have already dropped that item from the model.
+```{r}
+keys_list <- list(A = c(1, 3, 4, 10, 13, 16, 17),
+                      B = c(6, 9, 14),
+                      C = c(5, 8, 11), 
+                      D = c(2, 7, 15, 18) 
+                      )
+# keys_list <- list(A = c(01, 04, 05, 12, 16, 20, 21), these are question numbers, code above is corresponding column number
+#                       B = c(08, 11, 17),
+#                       C = c(06, 10, 13), 
+#                       D = c(02, 09, 19, 22) 
+#                       )
+keys <- make.keys(Items4, keys_list, item.labels = colnames(Items4))
+```
+## Score the items
+
+```{r}
+scores <- scoreItems(keys, Items4, impute = "none", 
+                         min = 1, max = 6, digits = 3)
+
+head(scores$scores)
+
+scores_df <- as.data.frame(scores$scores)
+```
+##Split out Factors
+
+```{r}
+FactorA <- Items4 %>%
+    dplyr::select(1, 3, 4, 10, 13, 16, 17)
+
+FactorB <- Items4 %>%
+    dplyr::select(6, 9, 14)
+
+FactorC <- Items4 %>%
+    dplyr::select(5, 8, 11)
+
+FactorD <- Items4 %>%
+    dplyr::select(2, 7, 15, 18)
+```
+
+## Scale reliability analysis of Factor A
+Need to create keys by individual scale. 
+```{r}
+keys_list <- list(A=c(1, 2, 3, 4, 5, 6, 7))
+
+keys <- make.keys(FactorA, keys_list, item.labels = colnames(FactorA))
+```
+Calculate Alpha.
+```{r}
+A_ALPHA <- psych::alpha(x = FactorA[, abs(keys_list$A)], keys = keys)
+```
+
+```{r}
+A_total <- round(as.data.frame(A_ALPHA$total), 3)
+A_alpha_drop <- round(as.data.frame(A_ALPHA$alpha.drop), 3)
+A_item_stat <- round(as.data.frame(A_ALPHA$item.stats), 3)
+
+A_ALPHA
+```
+## Scale reliability analysis of Factor B
+Need to create keys by individual scale. 
+```{r}
+keys_list <- list(B=c(1, 2, 3))
+
+keys <- make.keys(FactorB, keys_list, item.labels = colnames(FactorB))
+```
+Calculate Alpha.
+```{r}
+B_ALPHA <- psych::alpha(x = FactorB[, abs(keys_list$B)], keys = keys)
+```
+
+```{r}
+B_total <- round(as.data.frame(B_ALPHA$total), 3)
+B_alpha_drop <- round(as.data.frame(B_ALPHA$alpha.drop), 3)
+B_item_stat <- round(as.data.frame(B_ALPHA$item.stats), 3)
+
+B_ALPHA
+```
+## Scale reliability analysis of Factor C
+Need to create keys by individual scale. 
+```{r}
+keys_list <- list(C=c(1, 2, 3))
+
+keys <- make.keys(FactorC, keys_list, item.labels = colnames(FactorC))
+```
+Calculate Alpha.
+```{r}
+C_ALPHA <- psych::alpha(x = FactorC[, abs(keys_list$C)], keys = keys)
+```
+
+```{r}
+C_total <- round(as.data.frame(C_ALPHA$total), 3)
+C_alpha_drop <- round(as.data.frame(C_ALPHA$alpha.drop), 3)
+C_item_stat <- round(as.data.frame(C_ALPHA$item.stats), 3)
+
+C_ALPHA
+```
+
+## Scale reliability analysis of Factor D
+Need to create keys by individual scale. 
+```{r}
+keys_list <- list(D=c(1, 2, 3, 4))
+
+keys <- make.keys(FactorD, keys_list, item.labels = colnames(FactorD))
+```
+Calculate Alpha.
+```{r}
+D_ALPHA <- psych::alpha(x = FactorD[, abs(keys_list$D)], keys = keys)
+```
+
+```{r}
+D_total <- round(as.data.frame(D_ALPHA$total), 3)
+D_alpha_drop <- round(as.data.frame(D_ALPHA$alpha.drop), 3)
+D_item_stat <- round(as.data.frame(D_ALPHA$item.stats), 3)
+
+D_ALPHA
+```
+```{r}
+cronbach(Items4)
+```
+
