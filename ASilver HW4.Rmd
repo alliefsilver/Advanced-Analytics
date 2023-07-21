@@ -1,0 +1,1054 @@
+---
+title: "Class 4 REGEX"
+output: html_notebook
+---
+
+This is a tutorial on `gdscrapR` which is a web scraper for Glassdoor Reviews.
+
+```{r}
+#Tutorial on gdscrapeR
+#From: https://github.com/mguideng/gdscrapeR
+#June 2019
+
+
+
+############################################################################################
+############################################################################################
+# Clear workspace 
+rm(list = ls())
+############################################################################################
+
+#######################################################################################################
+#######################################################################################################
+##################################LOADING PACKAGES#####################################################
+
+################################################################################
+#Do tryCatch here
+
+tryCatch(require(pacman),finally=utils:::install.packages(pkgs='pacman',repos='http://cran.r-project.org'));
+require(pacman)
+
+##if the above doesn't work, use this code##
+##tryCatch
+#detach("package:pacman", unload = TRUE)
+#install.packages("pacman", dependencies = TRUE)
+# ## install.packages("pacman")
+pacman::p_load(openxlsx, 
+               tidyverse, 
+               devtools,
+               conflicted,
+               lubridate,
+               sentimentr)
+
+#Loading libraries
+library(openxlsx)
+library(tidyverse)
+library(devtools)
+library(conflicted)
+library(lubridate)
+library(sentimentr)
+
+
+devtools::install_github("mguideng/gdscrapeR")
+
+library(gdscrapeR)
+```
+
+```{r}
+conflict_prefer("filter", "dplyr")
+```
+
+In the tutorial, they use SpaceX, but we will use Delta Air Lines to keep it closer to home. On second thought, it looks like they may have blocked my IP address. So we will use the Honeywell data from [here](https://www.kaggle.com/dhirajnimbalkar/topicmodellinghoneywellglassdoorreviews/downloads/topicmodellinghoneywellglassdoorreviews.zip/2). Thanks Kaggle!
+
+```{r, eval = FALSE}
+#######################################################################################################
+#######################################################################################################
+##################################LOADING DATA#########################################################----
+
+# USAGE
+# Example
+# The URL to scrape the awesome SpaceX company will be: www.glassdoor.com/Reviews/SpaceX-Reviews-E40371.htm.
+# The URL to scrape Delta will be: https://www.glassdoor.com/Reviews/Delta-Air-Lines-Reviews-E197.htm
+
+# The URL to scrape Honeywell will be: https://www.glassdoor.com/Reviews/Honeywell-Reviews-E28.htm
+
+# Function
+# Pass the company number through the get_reviews function. The company number is a string representing a company's unique ID number. Identified by navigating to a company's Glassdoor reviews web page and reviewing the URL for characters between "Reviews-" and ".htm" (usually starts with an "E" and followed by digits).
+
+# Create data frame of: Date, Summary, Rating, Title, Pros, Cons, Helpful
+#df <- get_reviews(companyNum = "E40371")
+df <- get_reviews(companyNum = "E197")
+#df <- get_reviews(companyNum = "E28")
+# This will scrape the following variables:
+# 
+# Date - of when review was posted
+# Summary - e.g., "Great People"
+# Rating - star rating between 1.0 and 5.0
+# Title - e.g., "Current Employee - Manager in Hawthorne, CA"
+# Pros - upsides of the workplace
+# Cons - downsides of the workplace
+# Helpful - count marked as being helpful, if any
+# (and other info related to the source link)
+
+#### REGEX ####
+# Package
+library(stringr)    # pattern matching functions
+
+# Add: PriKey (uniquely identify rows 1 to N, sorted from first to last review by date)
+df$rev.pk <- as.numeric(rownames(df))
+
+# Extract: Year, Status, Position, Location 
+df$rev.year <- as.numeric(sub(".*, ","", df$rev.date))
+
+df$rev.stat <- str_match(df$rev.title, ".+?(?= Employee -)")
+
+df$rev.pos <- str_replace_all(df$rev.title, ".* Employee - |\\sin .*|\\s$", "")
+
+df$rev.loc <- sub(".*\\sin ", "", df$rev.title)
+df$rev.loc <- ifelse(df$rev.loc %in% 
+                       (grep("Former Employee|Current Employee|^+$", df$rev.loc, value = T)), 
+                     "Not Given", df$rev.loc)
+
+# Clean: Pros, Cons, Helpful
+df$rev.pros <- gsub("&amp;", "&", df$rev.pros)
+
+df$rev.cons <- gsub("&amp;", "&", df$rev.cons)
+
+df$rev.helpf <- as.numeric(gsub("\\D", "", df$rev.helpf))
+
+DAL <- df
+
+#### EXPORT ####
+# write.csv(df, "df-results.csv", row.names = F)
+
+```
+
+We will load it manually
+
+```{r}
+library(readr)
+honeydata <- read_csv("C:/Users/allie/Documents/IOMP/AA/Homeworks/glassdoortest1.csv")
+```
+
+Let's get our column names.
+
+```{r}
+colnames(honeydata)
+```
+
+Change X1 to ID
+```{r}
+conflicts_prefer(tidylog::rename)
+```
+
+```{r}
+honeydata <- honeydata %>%
+    rename(ID = ...1)
+```
+Remove rows with blank data
+
+```{r}
+honeydata <- honeydata[!(honeydata$pros=="#NAME?"),]
+honeydata <- honeydata[!(honeydata$cons=="#NAME?"),]
+```
+
+
+
+We will just look at the Pros for now.
+
+Notice we are creating a new df called Comments_df so that we don't touch the original Data df. This is helpful because we will be slicing, dicing, scattering, etc. to the df in order to split out the text in various ways.
+
+
+```{r}
+#' <!--####################################################################################################### -->
+#' <!--####################################################################################################### -->
+#' <!--####################################################################################################### -->
+#' <!--####################################################################################################### -->
+#' <!--####################################################################################################### -->
+#' <!--#####################BRUTE FORCE TOPIC CLASSIFICATION USING REGEX###################################### -->
+conflicts_prefer(tidylog::select)
+Comments_df <- honeydata %>%
+    select(c(ID, pros)) %>%
+    filter(!is.na(pros)) %>%
+    rename('comments' = 'pros')
+
+```
+Create df for cons
+```{r}
+conflicts_prefer(tidylog::select)
+cons_df <- honeydata %>%
+    select(c(ID, cons)) %>%
+    filter(!is.na(cons)) %>%
+    rename('comments' = 'cons')
+```
+
+Convert everything to lowercase for simplicity.
+pros
+```{r}
+#Converting to lower case
+Comments_df <- Comments_df %>%
+    as_tibble() %>%
+    mutate(comments = str_replace_all(comments, "\uFFFD",""))
+```
+cons
+```{r}
+cons_df <- cons_df %>%
+    as_tibble() %>%
+    mutate(comments = str_replace_all(comments, "\uFFFD",""))
+```
+
+Remove all line breaks.
+pros
+```{r}
+#Remove all line breaks
+
+#From: https://stackoverflow.com/questions/21781014/remove-all-line-breaks-enter-symbols-from-the-string-using-r
+
+Comments_df$comments <- gsub("[\r\n]", "", Comments_df$comments)
+
+Comments_df <- Comments_df %>%
+    select(ID, comments) %>%
+    na.omit()
+
+```
+cons
+```{r}
+cons_df$comments <- gsub("[\r\n]", "", cons_df$comments)
+
+cons_df <- cons_df %>%
+    select(ID, comments) %>%
+    na.omit()
+
+```
+
+
+```{r}
+#Creating a beginning using `now` from lubridate.
+#This is helpful when you get to several categories using a brute force search so that you (and others if they run you script) know about how long it will take to run.
+
+#After we run everything, we will create `end_time <- now()` along with `print(difftime(end_time, start_time))` as the last line of code after everything we are concerned about has run.
+
+start_time <- now()
+```
+#PROS
+## Benefits
+```{r}
+med_benefits <- c('\\binsurance\\b', #this will only get the word "insurance" and nothing else
+              '^.*medic.*$', #this will get medic, medicine, medical, etc.
+              '\\b(?:health\\W+(?:\\w+\\W+){0,1}?care)\\b', #this will only get health care or healthcare (e.g. health and care must occur within one word)
+              '(?=.*coverage)(?=.*(?:medic|deduct|prescrip|insur|drug|health|dependent))',
+              '(?=.*plan)(?=.*(?:medic|dental|vision|insur))'
+)
+              
+
+medbenefits_pattern <- paste(med_benefits, collapse = "|") #This puts everything from what you put into `med_benefits` together into a pattern to search for.
+
+medbenefits_comments <- as.data.frame(Comments_df[grep(medbenefits_pattern, Comments_df$comments, value = FALSE, perl = TRUE),]) # This takes the pattern you just created and searches over the entire column of "comments" in the Comments_df
+
+TEST <- Comments_df %>%
+    mutate(med_benefits = ifelse(comments %in% medbenefits_comments$comments, "Y",
+                             "N")) #This creates a new object, TEST, from Comments_df and if any of the comments in the "comments" column match (%in%) the comments exactly, they get a "Y". If not they get a "N" in the new "benefits" column
+```
+```{r}
+pay_benefits <- c('\\bpay\\b', #this will only get the word "pay" and nothing else
+              '^.*comp.*$', #this will get comp, compensate, compensation
+              '\\braise\\b',
+              '\\bbonus\\b',
+              '^.*salar.*$',
+              '^.*pay.*$'
+             
+)
+              
+
+benefitspay_pattern <- paste(pay_benefits, collapse = "|") 
+
+benefitspay_comments <- as.data.frame(Comments_df[grep(benefitspay_pattern, Comments_df$comments, value = FALSE, perl = TRUE),]) 
+
+TEST <- TEST %>%
+    mutate(pay_benefits = ifelse(comments %in% benefitspay_comments$comments, "Y",
+                             "N")) 
+```
+```{r}
+pto_benefits <- c('\\bpto\\b', 
+              '\\bvacation\\b',
+              '\\b(?:time\\W+(?:\\w+\\W+){0,1}?off)\\b' #this will only get time off or timeoff (e.g. time and off must occur within one word)
+             
+)
+              
+
+benefitspto_pattern <- paste(pto_benefits, collapse = "|") 
+
+benefitspto_comments <- as.data.frame(Comments_df[grep(benefitspto_pattern, Comments_df$comments, value = FALSE, perl = TRUE),]) 
+
+TEST <- TEST %>%
+    mutate(pto_benefits = ifelse(comments %in% benefitspto_comments$comments, "Y",
+                             "N")) 
+```
+```{r}
+retire_benefits <- c('\\b401k\\b', 
+              '\\bstock\\b',
+              '^.*retire.*$'
+             
+)
+              
+
+benefitsretire_pattern <- paste(retire_benefits, collapse = "|") 
+
+benefitsretire_comments <- as.data.frame(Comments_df[grep(benefitsretire_pattern, Comments_df$comments, value = FALSE, perl = TRUE),]) 
+
+TEST <- TEST %>%
+    mutate(retire_benefits = ifelse(comments %in% benefitsretire_comments$comments, "Y",
+                             "N")) 
+```
+```{r}
+leave <- c(              '^.*matern.*$',
+                         '^.*patern.*$'
+             
+)
+              
+
+leave_pattern <- paste(leave, collapse = "|") 
+
+leave_comments <- as.data.frame(Comments_df[grep(leave_pattern, Comments_df$comments, value = FALSE, perl = TRUE),]) 
+
+TEST <- TEST %>%
+    mutate(leave = ifelse(comments %in% leave_comments$comments, "Y",
+                             "N")) 
+```
+ 
+
+```{r}
+career <- c('\\bprogression\\b', 
+              '(?=.*path)(?=.*(?:career))', #This will get path but only if it occurs with career in the same comment
+              '(?=.*advance)(?=.*(?:career))',
+              '^.*opportun.*$' ,
+            '\\brole\\b'
+                     )
+
+career_pattern <- paste(career, collapse = "|") 
+
+career_comments <- as.data.frame(Comments_df[grep(career_pattern, Comments_df$comments, value = FALSE, perl = TRUE),]) 
+
+TEST <- TEST %>%
+    mutate(career = ifelse(comments %in% career_comments$comments, "Y",
+                             "N")) 
+```
+
+
+```{r}
+dev <- c('\\btraining\\b', 
+            '^.*develop.*$',
+              '^.*learn.*$' 
+                     )
+
+dev_pattern <- paste(dev, collapse = "|") 
+
+dev_comments <- as.data.frame(Comments_df[grep(dev_pattern, Comments_df$comments, value = FALSE, perl = TRUE),]) 
+
+TEST <- TEST %>%
+    mutate(development = ifelse(comments %in% dev_comments$comments, "Y",
+                             "N")) 
+```
+```{r}
+work <- c('\\bcapacity\\b', 
+              '\\b(?:burn\\W+(?:\\w+\\W+){0,1}?out)\\b', 
+          '\\b(?:work\\W+(?:\\w+\\W+){0,1}?load)\\b'
+             
+)
+              
+
+work_pattern <- paste(work, collapse = "|") 
+
+work_comments <- as.data.frame(Comments_df[grep(work_pattern, Comments_df$comments, value = FALSE, perl = TRUE),]) 
+
+TEST <- TEST %>%
+    mutate(work = ifelse(comments %in% work_comments$comments, "Y",
+                             "N")) 
+```
+```{r}
+HR <- c('\\bhr\\b',
+        '(?=.*hir)(?=.*(?:talent|person|people))', #This will get hire/ing/d as long as some form of talent, person, or people etc. occur in the same comment
+        '\\bhire\\b',
+        '\\bhiring\\b',
+        '\\bhired\\b',
+        '\\bpolicy\\b',
+        '\\bpolicies\\b'
+          
+             
+)
+              
+
+hr_pattern <- paste(work, collapse = "|") 
+
+hr_comments <- as.data.frame(Comments_df[grep(hr_pattern, Comments_df$comments, value = FALSE, perl = TRUE),]) 
+
+TEST <- TEST %>%
+    mutate(hr = ifelse(comments %in% hr_comments$comments, "Y",
+                             "N")) 
+
+```
+```{r}
+onboarding <- c('\\bonboarding\\b',
+        '(?=.*hire)(?=.*(?:new))', #This will get hire but only if it occurs with new in the same comment
+        '\\borientation\\b'
+     
+          
+             
+)
+              
+
+onboarding_pattern <- paste(work, collapse = "|") 
+
+onboarding_comments <- as.data.frame(Comments_df[grep(onboarding_pattern, Comments_df$comments, value = FALSE, perl = TRUE),]) 
+
+TEST <- TEST %>%
+    mutate(onboarding = ifelse(comments %in% onboarding_comments$comments, "Y",
+                             "N")) 
+```
+```{r}
+leaders <- c('^.*manage.*$',
+             '^.*leader.*$',
+             '\\bsupervisor\\b',
+             '\\bboss\\b'
+     
+          
+             
+)
+              
+
+leaders_pattern <- paste(work, collapse = "|") 
+
+leaders_comments <- as.data.frame(Comments_df[grep(leaders_pattern, Comments_df$comments, value = FALSE, perl = TRUE),]) 
+
+TEST <- TEST %>%
+    mutate(leaders = ifelse(comments %in% leaders_comments$comments, "Y",
+                             "N")) 
+```
+```{r}
+culture <- c('^.*fair.*$',
+             '\\bculture\\b',
+             '\\bvalues\\b',
+             '\\btoxic\\b'
+     
+          
+             
+)
+              
+
+culture_pattern <- paste(work, collapse = "|") 
+
+culture_comments <- as.data.frame(Comments_df[grep(culture_pattern, Comments_df$comments, value = FALSE, perl = TRUE),]) 
+
+TEST <- TEST %>%
+    mutate(culture = ifelse(comments %in% culture_comments$comments, "Y",
+                             "N")) 
+```
+```{r}
+org <- c('^.*bureaucra.*$',
+             '\\bstructure\\b',
+             '\\bsecurity\\b',
+             '\\btape\\b',
+         '^.*silo.*$'
+     
+          
+             
+)
+              
+
+org_pattern <- paste(work, collapse = "|") 
+
+org_comments <- as.data.frame(Comments_df[grep(org_pattern, Comments_df$comments, value = FALSE, perl = TRUE),]) 
+
+TEST <- TEST %>%
+    mutate(org = ifelse(comments %in% org_comments$comments, "Y",
+                             "N")) 
+```
+```{r}
+office <- c('^.*office.*$',
+             '\\bremote\\b',
+         '^.*crowd.*$',
+         '\\bhome\\b',
+         '\\bwfh\\b',
+         '^.*flex.*$',
+         '\\bcommute\\b',
+          '\\b(?:tele\\W+(?:\\w+\\W+){0,1}?commute)\\b', #this will only get tele commute or telecommute (e.g. time and off must occur within one word)
+          '(?=.*return)(?=.*(?:work))', #This will get return but only if it occurs with work in the same comment
+          '(?=.*return)(?=.*(?:office))'
+          
+             
+)
+              
+
+office_pattern <- paste(office, collapse = "|") 
+
+office_comments <- as.data.frame(Comments_df[grep(office_pattern, Comments_df$comments, value = FALSE, perl = TRUE),]) 
+
+TEST <- TEST %>%
+    mutate(office = ifelse(comments %in% office_comments$comments, "Y",
+                             "N"))
+```
+```{r}
+social <- c('^.*social.*$',
+             '\\berg\\b',
+         '\\bvolunteer\\b',
+          '(?=.*community)(?=.*(?:service))', #This will get community but only if it occurs with service in the same comment
+          '(?=.*resource)(?=.*(?:group))', 
+             '(?=.*resource)(?=.*(?:groups))',
+         '(?=.*social)(?=.*(?:impact))'
+)
+              
+
+social_pattern <- paste(social, collapse = "|") 
+
+social_comments <- as.data.frame(Comments_df[grep(social_pattern, Comments_df$comments, value = FALSE, perl = TRUE),]) 
+
+TEST <- TEST %>%
+    mutate(social = ifelse(comments %in% social_comments$comments, "Y",
+                             "N"))
+```
+```{r}
+rec <- c('^.*reward.*$',
+         '^.*recog.*$',
+             '\\bvalued\\b'
+)
+              
+
+rec_pattern <- paste(rec, collapse = "|") 
+
+rec_comments <- as.data.frame(Comments_df[grep(rec_pattern, Comments_df$comments, value = FALSE, perl = TRUE),]) 
+
+TEST <- TEST %>%
+    mutate(rec = ifelse(comments %in% rec_comments$comments, "Y",
+                             "N"))
+```
+```{r}
+perf <- c('^.*promo.*$',
+        '(?=.*perf)(?=.*(?:manage|management|annual|yearly))' #This will get perf, performance etc. as long as some form of management, manage, annual, etc. occur in the same comment
+)
+              
+
+perf_pattern <- paste(perf, collapse = "|") 
+
+perf_comments <- as.data.frame(Comments_df[grep(perf_pattern, Comments_df$comments, value = FALSE, perl = TRUE),]) 
+
+TEST <- TEST %>%
+    mutate(perf = ifelse(comments %in% perf_comments$comments, "Y",
+                             "N"))
+```
+```{r}
+attrition <- c(
+               '\\bquit\\b',
+               '\\b(?:lay\\W+(?:\\w+\\W+){0,1}?off)\\b', #this will only get layoff or lay off
+               '\\b(?:lay\\W+(?:\\w+\\W+){0,1}?offs)\\b' #this will only get layoffs and lay offs 
+            
+               
+        
+)
+              
+
+att_pattern <- paste(attrition, collapse = "|") 
+
+att_comments <- as.data.frame(Comments_df[grep(att_pattern, Comments_df$comments, value = FALSE, perl = TRUE),]) 
+
+TEST <- TEST %>%
+    mutate(attrition = ifelse(comments %in% att_comments$comments, "Y",
+                             "N"))
+```
+```{r}
+dei <- c('^.*divers.*$',
+             '\\bdiversity\\b',
+             '\\binclusion\\b',
+             '\\bequity\\b',
+             '\\bdei\\b'
+)
+              
+
+dei_pattern <- paste(dei, collapse = "|") 
+
+dei_comments <- as.data.frame(Comments_df[grep(dei_pattern, Comments_df$comments, value = FALSE, perl = TRUE),]) 
+
+TEST <- TEST %>%
+    mutate(dei = ifelse(comments %in% dei_comments$comments, "Y",
+                             "N"))
+```
+```{r}
+retention <- c(
+             '\\bretain\\b',
+             '\\bretention\\b'
+)
+              
+
+ret_pattern <- paste(retention, collapse = "|") 
+
+ret_comments <- as.data.frame(Comments_df[grep(ret_pattern, Comments_df$comments, value = FALSE, perl = TRUE),]) 
+
+TEST <- TEST %>%
+    mutate(retention = ifelse(comments %in% ret_comments$comments, "Y",
+                             "N"))
+```
+
+```{r}
+TEST <- TEST %>%
+    mutate(other = apply(TEST, 1, function(y){ ifelse("Y" %in% y, "N", "Y")}))
+
+end_time <- now()
+
+print(difftime(end_time, start_time))
+```
+
+CONS
+## Benefits
+```{r}
+med_benefits <- c('\\binsurance\\b', #this will only get the word "insurance" and nothing else
+              '^.*medic.*$', #this will get medic, medicine, medical, etc.
+              '\\b(?:health\\W+(?:\\w+\\W+){0,1}?care)\\b', #this will only get health care or healthcare (e.g. health and care must occur within one word)
+              '(?=.*coverage)(?=.*(?:medic|deduct|prescrip|insur|drug|health|dependent))',
+              '(?=.*plan)(?=.*(?:medic|dental|vision|insur))'
+)
+              
+
+medbenefits_pattern <- paste(med_benefits, collapse = "|") #This puts everything from what you put into `med_benefits` together into a pattern to search for.
+
+medbenefits_comments <- as.data.frame(cons_df[grep(medbenefits_pattern, cons_df$comments, value = FALSE, perl = TRUE),]) # This takes the pattern you just created and searches over the entire column of "comments" in the Comments_df
+
+constest <- cons_df %>%
+    mutate(med_benefits = ifelse(comments %in% medbenefits_comments$comments, "Y",
+                             "N")) #This creates a new object, TEST, from Comments_df and if any of the comments in the "comments" column match (%in%) the comments exactly, they get a "Y". If not they get a "N" in the new "benefits" column
+```
+```{r}
+pay_benefits <- c('\\bpay\\b', #this will only get the word "pay" and nothing else
+              '^.*comp.*$', #this will get comp, compensate, compensation
+              '\\braise\\b',
+              '\\bbonus\\b',
+              '^.*salar.*$',
+              '^.*pay.*$'
+             
+)
+              
+
+benefitspay_pattern <- paste(pay_benefits, collapse = "|") 
+
+benefitspay_comments <- as.data.frame(cons_df[grep(benefitspay_pattern, cons_df$comments, value = FALSE, perl = TRUE),]) 
+
+constest <- constest %>%
+    mutate(pay_benefits = ifelse(comments %in% benefitspay_comments$comments, "Y",
+                             "N")) 
+```
+```{r}
+pto_benefits <- c('\\bpto\\b', 
+              '\\bvacation\\b',
+              '\\b(?:time\\W+(?:\\w+\\W+){0,1}?off)\\b' #this will only get time off or timeoff (e.g. time and off must occur within one word)
+             
+)
+              
+
+benefitspto_pattern <- paste(pto_benefits, collapse = "|") 
+
+benefitspto_comments <- as.data.frame(cons_df[grep(benefitspto_pattern, cons_df$comments, value = FALSE, perl = TRUE),]) 
+
+constest <- constest %>%
+    mutate(pto_benefits = ifelse(comments %in% benefitspto_comments$comments, "Y",
+                             "N")) 
+```
+```{r}
+retire_benefits <- c('\\b401k\\b', 
+              '\\bstock\\b',
+              '^.*retire.*$'
+             
+)
+              
+
+benefitsretire_pattern <- paste(retire_benefits, collapse = "|") 
+
+benefitsretire_comments <- as.data.frame(cons_df[grep(benefitsretire_pattern, cons_df$comments, value = FALSE, perl = TRUE),]) 
+
+constest <- constest %>%
+    mutate(retire_benefits = ifelse(comments %in% benefitsretire_comments$comments, "Y",
+                             "N")) 
+```
+```{r}
+leave <- c(              '^.*matern.*$',
+                         '^.*patern.*$'
+             
+)
+              
+
+leave_pattern <- paste(leave, collapse = "|") 
+
+leave_comments <- as.data.frame(cons_df[grep(leave_pattern, cons_df$comments, value = FALSE, perl = TRUE),]) 
+
+constest <- constest %>%
+    mutate(leave = ifelse(comments %in% leave_comments$comments, "Y",
+                             "N")) 
+```
+ 
+
+```{r}
+career <- c('\\bprogression\\b', 
+              '(?=.*path)(?=.*(?:career))', #This will get path but only if it occurs with career in the same comment
+              '(?=.*advance)(?=.*(?:career))',
+              '^.*opportun.*$' ,
+            '\\brole\\b'
+                     )
+
+career_pattern <- paste(career, collapse = "|") 
+
+career_comments <- as.data.frame(cons_df[grep(career_pattern, cons_df$comments, value = FALSE, perl = TRUE),]) 
+
+constest <- constest %>%
+    mutate(career = ifelse(comments %in% career_comments$comments, "Y",
+                             "N")) 
+```
+
+
+```{r}
+dev <- c('\\btraining\\b', 
+            '^.*develop.*$',
+              '^.*learn.*$' 
+                     )
+
+dev_pattern <- paste(dev, collapse = "|") 
+
+dev_comments <- as.data.frame(cons_df[grep(dev_pattern, cons_df$comments, value = FALSE, perl = TRUE),]) 
+
+constest <- constest %>%
+    mutate(development = ifelse(comments %in% dev_comments$comments, "Y",
+                             "N")) 
+```
+```{r}
+work <- c('\\bcapacity\\b', 
+              '\\b(?:burn\\W+(?:\\w+\\W+){0,1}?out)\\b', 
+          '\\b(?:work\\W+(?:\\w+\\W+){0,1}?load)\\b'
+             
+)
+              
+
+work_pattern <- paste(work, collapse = "|") 
+
+work_comments <- as.data.frame(cons_df[grep(work_pattern, cons_df$comments, value = FALSE, perl = TRUE),]) 
+
+constest <- constest %>%
+    mutate(work = ifelse(comments %in% work_comments$comments, "Y",
+                             "N")) 
+```
+```{r}
+HR <- c('\\bhr\\b',
+        '(?=.*hir)(?=.*(?:talent|person|people))', #This will get hire/ing/d as long as some form of talent, person, or people etc. occur in the same comment
+        '\\bhire\\b',
+        '\\bhiring\\b',
+        '\\bhired\\b',
+        '\\bpolicy\\b',
+        '\\bpolicies\\b'
+          
+             
+)
+              
+
+hr_pattern <- paste(work, collapse = "|") 
+
+hr_comments <- as.data.frame(cons_df[grep(hr_pattern, cons_df$comments, value = FALSE, perl = TRUE),]) 
+
+constest <- constest %>%
+    mutate(hr = ifelse(comments %in% hr_comments$comments, "Y",
+                             "N")) 
+
+```
+```{r}
+onboarding <- c('\\bonboarding\\b',
+        '(?=.*hire)(?=.*(?:new))', #This will get hire but only if it occurs with new in the same comment
+        '\\borientation\\b'
+     
+          
+             
+)
+              
+
+onboarding_pattern <- paste(work, collapse = "|") 
+
+onboarding_comments <- as.data.frame(cons_df[grep(onboarding_pattern, cons_df$comments, value = FALSE, perl = TRUE),]) 
+
+constest <- constest %>%
+    mutate(onboarding = ifelse(comments %in% onboarding_comments$comments, "Y",
+                             "N")) 
+```
+```{r}
+leaders <- c('^.*manage.*$',
+             '^.*leader.*$',
+             '\\bsupervisor\\b',
+             '\\bboss\\b'
+     
+          
+             
+)
+              
+
+leaders_pattern <- paste(work, collapse = "|") 
+
+leaders_comments <- as.data.frame(cons_df[grep(leaders_pattern, cons_df$comments, value = FALSE, perl = TRUE),]) 
+
+constest <- constest %>%
+    mutate(leaders = ifelse(comments %in% leaders_comments$comments, "Y",
+                             "N")) 
+```
+```{r}
+culture <- c('^.*fair.*$',
+             '\\bculture\\b',
+             '\\bvalues\\b',
+             '\\btoxic\\b'
+     
+          
+             
+)
+              
+
+culture_pattern <- paste(work, collapse = "|") 
+
+culture_comments <- as.data.frame(cons_df[grep(culture_pattern, cons_df$comments, value = FALSE, perl = TRUE),]) 
+
+constest <- constest %>%
+    mutate(culture = ifelse(comments %in% culture_comments$comments, "Y",
+                             "N")) 
+```
+```{r}
+org <- c('^.*bureaucra.*$',
+             '\\bstructure\\b',
+             '\\bsecurity\\b',
+             '\\btape\\b',
+         '^.*silo.*$'
+     
+          
+             
+)
+              
+
+org_pattern <- paste(work, collapse = "|") 
+
+org_comments <- as.data.frame(cons_df[grep(org_pattern, cons_df$comments, value = FALSE, perl = TRUE),]) 
+
+constest <- constest %>%
+    mutate(org = ifelse(comments %in% org_comments$comments, "Y",
+                             "N")) 
+```
+```{r}
+office <- c('^.*office.*$',
+             '\\bremote\\b',
+         '^.*crowd.*$',
+         '\\bhome\\b',
+         '\\bwfh\\b',
+         '^.*flex.*$',
+         '\\bcommute\\b',
+          '\\b(?:tele\\W+(?:\\w+\\W+){0,1}?commute)\\b', #this will only get tele commute or telecommute (e.g. time and off must occur within one word)
+          '(?=.*return)(?=.*(?:work))', #This will get return but only if it occurs with work in the same comment
+          '(?=.*return)(?=.*(?:office))'
+          
+             
+)
+              
+
+office_pattern <- paste(office, collapse = "|") 
+
+office_comments <- as.data.frame(cons_df[grep(office_pattern, cons_df$comments, value = FALSE, perl = TRUE),]) 
+
+constest <- constest %>%
+    mutate(office = ifelse(comments %in% office_comments$comments, "Y",
+                             "N"))
+```
+```{r}
+social <- c('^.*social.*$',
+             '\\berg\\b',
+         '\\bvolunteer\\b',
+          '(?=.*community)(?=.*(?:service))', #This will get community but only if it occurs with service in the same comment
+          '(?=.*resource)(?=.*(?:group))', 
+             '(?=.*resource)(?=.*(?:groups))',
+         '(?=.*social)(?=.*(?:impact))'
+)
+              
+
+social_pattern <- paste(social, collapse = "|") 
+
+social_comments <- as.data.frame(cons_df[grep(social_pattern, cons_df$comments, value = FALSE, perl = TRUE),]) 
+
+constest <- constest %>%
+    mutate(social = ifelse(comments %in% social_comments$comments, "Y",
+                             "N"))
+```
+```{r}
+rec <- c('^.*reward.*$',
+         '^.*recog.*$',
+             '\\bvalued\\b'
+)
+              
+
+rec_pattern <- paste(rec, collapse = "|") 
+
+rec_comments <- as.data.frame(cons_df[grep(rec_pattern, cons_df$comments, value = FALSE, perl = TRUE),]) 
+
+constest <- constest %>%
+    mutate(rec = ifelse(comments %in% rec_comments$comments, "Y",
+                             "N"))
+```
+```{r}
+perf <- c('^.*promo.*$',
+        '(?=.*perf)(?=.*(?:manage|management|annual|yearly))' #This will get perf, performance etc. as long as some form of management, manage, annual, etc. occur in the same comment
+)
+              
+
+perf_pattern <- paste(perf, collapse = "|") 
+
+perf_comments <- as.data.frame(cons_df[grep(perf_pattern, cons_df$comments, value = FALSE, perl = TRUE),]) 
+
+constest <- constest %>%
+    mutate(perf = ifelse(comments %in% perf_comments$comments, "Y",
+                             "N"))
+```
+```{r}
+attrition <- c(
+               '\\bquit\\b',
+               '\\b(?:lay\\W+(?:\\w+\\W+){0,1}?off)\\b', #this will only get layoff or lay off
+               '\\b(?:lay\\W+(?:\\w+\\W+){0,1}?offs)\\b' #this will only get layoffs and lay offs 
+            
+               
+        
+)
+              
+
+att_pattern <- paste(attrition, collapse = "|") 
+
+att_comments <- as.data.frame(cons_df[grep(att_pattern, cons_df$comments, value = FALSE, perl = TRUE),]) 
+
+constest <- constest %>%
+    mutate(attrition = ifelse(comments %in% att_comments$comments, "Y",
+                             "N"))
+```
+```{r}
+dei <- c('^.*divers.*$',
+             '\\bdiversity\\b',
+             '\\binclusion\\b',
+             '\\bequity\\b',
+             '\\bdei\\b'
+)
+              
+
+dei_pattern <- paste(dei, collapse = "|") 
+
+dei_comments <- as.data.frame(cons_df[grep(dei_pattern, cons_df$comments, value = FALSE, perl = TRUE),]) 
+
+constest <- constest %>%
+    mutate(dei = ifelse(comments %in% dei_comments$comments, "Y",
+                             "N"))
+```
+```{r}
+retention <- c(
+             '\\bretain\\b',
+             '\\bretention\\b'
+)
+              
+
+ret_pattern <- paste(retention, collapse = "|") 
+
+ret_comments <- as.data.frame(cons_df[grep(ret_pattern, cons_df$comments, value = FALSE, perl = TRUE),]) 
+
+constest <- constest %>%
+    mutate(retention = ifelse(comments %in% ret_comments$comments, "Y",
+                             "N"))
+```
+
+```{r}
+constest <- constest %>%
+    mutate(other = apply(constest, 1, function(y){ ifelse("Y" %in% y, "N", "Y")}))
+
+```
+
+
+```{r}
+
+
+library(stringi)
+library(openxlsx)
+
+INTRO <- c("Honeywell Pro Comments",
+
+         "Data Source: Glassdoor",
+
+         "Data As Of: 2018",
+
+         "Prepared on: 7/20/2023",
+
+         "Prepared by: Allie Silver")
+
+INTRO <- stri_enc_toutf8(INTRO)
+
+wb <- openxlsx::createWorkbook() #Create a work book
+
+#Comment Report
+
+addWorksheet(wb, "Pro Comment Report") #name the worksheet in Excel
+
+writeData(wb, "Pro Comment Report", INTRO) #Write your INTRO
+
+
+#Create style
+
+style1 <- createStyle(fontColour = "#f2852f", textDecoration = "Bold") #Choose your custom font color (https://www.rgbtohex.net/) and make it bold. Call it style1
+
+
+writeData(wb, "Pro Comment Report", TEST, startRow = 8) #put your DF (in this case TEST) into the sheet under your writing (row 8)
+
+hs1 <- createStyle(textDecoration = "Bold") #create a new style for heading
+
+addStyle(wb, style = hs1, rows = 8, cols = 1:50, sheet = "Pro Comment Report") #Tell it where to go. We'll do 50 columns in this case so it can grow if needed
+
+#Freeze Panes
+
+#Also check here: https://stackoverflow.com/questions/37677326/applying-style-to-all-sheets-of-a-workbook-using-openxlsx-package-in-r
+
+freezePane(wb, "Pro Comment Report", firstActiveRow = 9) #Freeze those panes. You know you want to. Tell it where to start.
+
+#Add filter
+
+addFilter(wb, "Pro Comment Report", row = 8, cols = 1:50) #Add your filter as well. If you're trying to impress, you might as well go all in :)
+
+#Now we'll do a fancy save by customizing the file name using paste0 and system time. We'll also assume this was for the previous month. You'll also need to make this path the one you want on your computer. 
+
+
+saveWorkbook(wb, paste0("C:/Users/allie/Documents/IOMP/AA/Homeworks", format(floor_date(Sys.Date()-months(1), "month"), "%B_%Y") , ".xlsx"), overwrite = TRUE)
+
+wb
+```
+
+Add worksheet for Cons
+```{r}
+addWorksheet(wb, "Con Comment Report")
+
+writeData(wb, "Con Comment Report", INTRO) #Write your INTRO
+
+
+#Create style
+
+style1 <- createStyle(fontColour = "#f2852f", textDecoration = "Bold") #Choose your custom font color (https://www.rgbtohex.net/) and make it bold. Call it style1
+
+
+writeData(wb, "Con Comment Report", constest, startRow = 1) #put your DF (in this case TEST) into the sheet under your writing (row 8)
+
+hs1 <- createStyle(textDecoration = "Bold") #create a new style for heading
+
+addStyle(wb, style = hs1, rows = 1, cols = 1:50, sheet = "Con Comment Report") #Tell it where to go. We'll do 50 columns in this case so it can grow if needed
+
+#Freeze Panes
+
+#Also check here: https://stackoverflow.com/questions/37677326/applying-style-to-all-sheets-of-a-workbook-using-openxlsx-package-in-r
+
+freezePane(wb, "Con Comment Report", firstActiveRow = 2) #Freeze those panes. You know you want to. Tell it where to start.
+
+#Add filter
+
+addFilter(wb, "Con Comment Report", row = 1, cols = 1:50) #Add your filter as well. If you're trying to impress, you might as well go all in :)
+
+#Now we'll do a fancy save by customizing the file name using paste0 and system time. We'll also assume this was for the previous month. You'll also need to make this path the one you want on your computer. 
+
+
+saveWorkbook(wb, paste0("C:/Users/allie/Documents/IOMP/AA/Homeworks", format(floor_date(Sys.Date()-months(1), "month"), "%B_%Y") , ".xlsx"), overwrite = TRUE)
+
+
+```
+
